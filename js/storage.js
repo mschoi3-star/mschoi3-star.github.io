@@ -19,27 +19,27 @@ function save(key, data) {
   localStorage.setItem(key, JSON.stringify(data));
 }
 
-export function getAssignments() {
+function getAssignments() {
   return load(KEYS.assignments);
 }
 
-export function setAssignments(data) {
+function setAssignments(data) {
   save(KEYS.assignments, data);
 }
 
-export function getRecords() {
+function getRecords() {
   return load(KEYS.records);
 }
 
-export function setRecords(data) {
+function setRecords(data) {
   save(KEYS.records, data);
 }
 
-export function makeId() {
+function makeId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 }
 
-export function readFileAsDataURL(file) {
+function readFileAsDataURL(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result);

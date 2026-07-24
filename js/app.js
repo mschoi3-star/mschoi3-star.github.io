@@ -1,153 +1,48 @@
-import { firebaseConfig } from "./firebase-config.js";
-import { analyzeCriteria } from "./guidance.js";
-
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import {
-  getAuth,
-  GoogleAuthProvider,
-  signInWithPopup,
-  signOut,
-  onAuthStateChanged,
-} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import {
-  getFirestore,
-  collection,
-  addDoc,
-  updateDoc,
-  deleteDoc,
-  doc,
-  onSnapshot,
-  query,
-  orderBy,
-  serverTimestamp,
-} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import {
-  getStorage,
-  ref,
-  uploadBytes,
-  getDownloadURL,
-} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-storage.js";
-
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-const storage = getStorage(app);
-const provider = new GoogleAuthProvider();
+const MAX_FILE_SIZE = 3 * 1024 * 1024; // 3MB
 
 // ---------- State ----------
-let currentUser = null;
-let unsubscribers = [];
-let assignments = [];
-let materials = [];
-let records = [];
+let assignments = getAssignments();
+let records = getRecords();
 let editingAssignmentId = null;
+let selectedDate = null; // ISO date string, filters the assignment list
+const today = new Date();
+let calYear = today.getFullYear();
+let calMonth = today.getMonth(); // 0-indexed
 
 // ---------- DOM refs ----------
-const loginScreen = document.getElementById("login-screen");
-const appEl = document.getElementById("app");
-const loginBtn = document.getElementById("login-btn");
-const logoutBtn = document.getElementById("logout-btn");
-const loginError = document.getElementById("login-error");
-const userEmailEl = document.getElementById("user-email");
 const noticeBanner = document.getElementById("notice-banner");
 
 const statGrid = document.getElementById("stat-grid");
-const dashboardList = document.getElementById("dashboard-list");
 
 const assignmentForm = document.getElementById("assignment-form");
 const assignmentList = document.getElementById("assignment-list");
 const assignmentCancelEdit = document.getElementById("assignment-cancel-edit");
+const listHeading = document.getElementById("list-heading");
+const clearDateFilterBtn = document.getElementById("clear-date-filter");
 
-const materialForm = document.getElementById("material-form");
-const materialList = document.getElementById("material-list");
-const materialAssignmentSelect = document.getElementById("m-assignment");
-const materialUploadStatus = document.getElementById("material-upload-status");
+const calendarGrid = document.getElementById("calendar-grid");
+const calendarLabel = document.getElementById("calendar-label");
+const calPrev = document.getElementById("cal-prev");
+const calNext = document.getElementById("cal-next");
 
 const recordForm = document.getElementById("record-form");
-const recordList = document.getElementById("record-list");
+const recordStatus = document.getElementById("record-status");
+const recordGroups = document.getElementById("record-groups");
+const filterGrade = document.getElementById("filter-grade");
+const filterSemester = document.getElementById("filter-semester");
 
 const guidanceModal = document.getElementById("guidance-modal");
 const guidanceContent = document.getElementById("guidance-content");
 const guidanceClose = document.getElementById("guidance-close");
 
-// ---------- Auth ----------
-loginBtn.addEventListener("click", async () => {
-  loginError.textContent = "";
-  try {
-    await signInWithPopup(auth, provider);
-  } catch (err) {
-    loginError.textContent =
-      "로그인에 실패했습니다. js/firebase-config.js 설정을 확인하세요. (" + err.code + ")";
-  }
-});
-
-logoutBtn.addEventListener("click", () => signOut(auth));
-
-onAuthStateChanged(auth, (user) => {
-  currentUser = user;
-  unsubscribers.forEach((fn) => fn());
-  unsubscribers = [];
-
-  if (user) {
-    loginScreen.classList.add("hidden");
-    appEl.classList.remove("hidden");
-    userEmailEl.textContent = user.email || "";
-    subscribeAll(user.uid);
-  } else {
-    appEl.classList.add("hidden");
-    loginScreen.classList.remove("hidden");
-    assignments = [];
-    materials = [];
-    records = [];
-  }
-});
-
-function subscribeAll(uid) {
-  const assignmentsQ = query(
-    collection(db, "users", uid, "assignments"),
-    orderBy("dueDate", "asc")
-  );
-  unsubscribers.push(
-    onSnapshot(assignmentsQ, (snap) => {
-      assignments = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      renderAll();
-    })
-  );
-
-  const materialsQ = query(
-    collection(db, "users", uid, "materials"),
-    orderBy("createdAt", "desc")
-  );
-  unsubscribers.push(
-    onSnapshot(materialsQ, (snap) => {
-      materials = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      renderMaterials();
-    })
-  );
-
-  const recordsQ = query(
-    collection(db, "users", uid, "records"),
-    orderBy("createdAt", "desc")
-  );
-  unsubscribers.push(
-    onSnapshot(recordsQ, (snap) => {
-      records = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      renderRecords();
-    })
-  );
+// ---------- Date helpers ----------
+function toISODate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
-// ---------- Tabs ----------
-document.querySelectorAll(".tab-btn").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
-    document.querySelectorAll(".tab-panel").forEach((p) => p.classList.add("hidden"));
-    btn.classList.add("active");
-    document.getElementById("tab-" + btn.dataset.tab).classList.remove("hidden");
-  });
-});
-
-// ---------- Date helpers ----------
 function dDay(dueDateStr) {
   const due = new Date(dueDateStr + "T23:59:59");
   const now = new Date();
@@ -165,9 +60,9 @@ function badgeForDday(diff, done) {
 // ---------- Render: everything that depends on assignments ----------
 function renderAll() {
   renderNoticeBanner();
-  renderDashboard();
+  renderStats();
+  renderCalendar();
   renderAssignments();
-  renderMaterialAssignmentOptions();
 }
 
 function renderNoticeBanner() {
@@ -196,97 +91,186 @@ function renderNoticeBanner() {
       .join("")}</ul>`;
 }
 
-function renderDashboard() {
+function renderStats() {
   const total = assignments.length;
   const done = assignments.filter((a) => a.done).length;
-  const thisWeek = assignments.filter((a) => !a.done && dDay(a.dueDate) <= 7 && dDay(a.dueDate) >= 0).length;
+  const thisWeek = assignments.filter(
+    (a) => !a.done && dDay(a.dueDate) <= 7 && dDay(a.dueDate) >= 0
+  ).length;
 
   statGrid.innerHTML = `
     <div class="stat-card"><div class="num">${total}</div><div class="label">전체 수행평가</div></div>
     <div class="stat-card"><div class="num">${thisWeek}</div><div class="label">이번 주 마감</div></div>
     <div class="stat-card"><div class="num">${done}</div><div class="label">완료</div></div>
   `;
-
-  const upcoming = assignments
-    .filter((a) => !a.done)
-    .sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate))
-    .slice(0, 6);
-
-  if (upcoming.length === 0) {
-    dashboardList.innerHTML = `<div class="empty-state">등록된 수행평가가 없어요. '수행평가 일정' 탭에서 추가해보세요.</div>`;
-    return;
-  }
-
-  dashboardList.innerHTML = upcoming.map((a) => assignmentCardHtml(a, false)).join("");
 }
 
-function assignmentCardHtml(a, showActions = true) {
+// ---------- Calendar ----------
+function renderCalendar() {
+  calendarLabel.textContent = `${calYear}년 ${calMonth + 1}월`;
+  const firstDay = new Date(calYear, calMonth, 1).getDay();
+  const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
+  const todayStr = toISODate(today);
+
+  const cells = [];
+  for (let i = 0; i < firstDay; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+
+  calendarGrid.innerHTML = cells
+    .map((d) => {
+      if (d === null) return `<div class="cal-cell cal-empty"></div>`;
+      const dateStr = toISODate(new Date(calYear, calMonth, d));
+      const dayAssignments = assignments.filter((a) => a.dueDate === dateStr);
+      const isToday = dateStr === todayStr;
+      const isSelected = dateStr === selectedDate;
+
+      let urgency = "";
+      if (dayAssignments.some((a) => !a.done)) {
+        if (dayAssignments.some((a) => !a.done && dDay(a.dueDate) <= 0)) urgency = "danger";
+        else if (dayAssignments.some((a) => !a.done && dDay(a.dueDate) <= 3)) urgency = "warning";
+        else urgency = "ok";
+      }
+
+      return `
+        <div class="cal-cell ${isToday ? "cal-today" : ""} ${isSelected ? "cal-selected" : ""}" data-date="${dateStr}">
+          <div class="cal-date">${d}</div>
+          ${urgency ? `<div class="cal-dot cal-dot-${urgency}"></div>` : ""}
+          ${dayAssignments
+            .slice(0, 2)
+            .map((a) => `<div class="cal-item">${escapeHtml(a.title)}</div>`)
+            .join("")}
+          ${dayAssignments.length > 2 ? `<div class="cal-more">+${dayAssignments.length - 2}</div>` : ""}
+        </div>
+      `;
+    })
+    .join("");
+}
+
+calendarGrid.addEventListener("click", (e) => {
+  const cell = e.target.closest(".cal-cell[data-date]");
+  if (!cell) return;
+  const dateStr = cell.dataset.date;
+  selectedDate = selectedDate === dateStr ? null : dateStr;
+  renderCalendar();
+  renderAssignments();
+});
+
+calPrev.addEventListener("click", () => {
+  calMonth -= 1;
+  if (calMonth < 0) {
+    calMonth = 11;
+    calYear -= 1;
+  }
+  renderCalendar();
+});
+
+calNext.addEventListener("click", () => {
+  calMonth += 1;
+  if (calMonth > 11) {
+    calMonth = 0;
+    calYear += 1;
+  }
+  renderCalendar();
+});
+
+clearDateFilterBtn.addEventListener("click", () => {
+  selectedDate = null;
+  renderCalendar();
+  renderAssignments();
+});
+
+// ---------- Assignment list ----------
+function assignmentCardHtml(a) {
   const diff = dDay(a.dueDate);
   return `
-    <div class="item-card" data-id="${a.id}">
-      <div class="item-main">
+    <div class="item-card ${a.criteria ? "item-card-clickable" : ""}" data-id="${a.id}">
+      <div class="item-main" data-action="guidance">
         <div class="item-title-row">
           <span class="item-title">${escapeHtml(a.title)}</span>
           ${badgeForDday(diff, a.done)}
         </div>
         <div class="item-subject">${escapeHtml(a.subject)} · 마감 ${a.dueDate}</div>
         ${a.memo ? `<div class="item-meta">${escapeHtml(a.memo)}</div>` : ""}
+        ${a.criteria ? `<div class="item-hint">📌 클릭하면 준비 방향을 볼 수 있어요</div>` : ""}
       </div>
-      ${
-        showActions
-          ? `<div class="item-actions">
-              ${a.criteria ? `<button class="btn btn-secondary btn-sm" data-action="guidance">준비 방향</button>` : ""}
-              <button class="btn btn-secondary btn-sm" data-action="toggle-done">${a.done ? "완료 취소" : "완료"}</button>
-              <button class="btn btn-secondary btn-sm" data-action="edit">수정</button>
-              <button class="btn btn-danger btn-sm" data-action="delete">삭제</button>
-            </div>`
-          : a.criteria
-          ? `<div class="item-actions"><button class="btn btn-secondary btn-sm" data-action="guidance">준비 방향</button></div>`
-          : ""
-      }
+      <div class="item-actions">
+        <button class="btn btn-secondary btn-sm" data-action="toggle-done">${a.done ? "완료 취소" : "완료"}</button>
+        <button class="btn btn-secondary btn-sm" data-action="edit">수정</button>
+        <button class="btn btn-danger btn-sm" data-action="delete">삭제</button>
+      </div>
     </div>
   `;
 }
 
 function renderAssignments() {
-  if (assignments.length === 0) {
-    assignmentList.innerHTML = `<div class="empty-state">등록된 수행평가가 없어요.</div>`;
+  let list = [...assignments];
+  if (selectedDate) {
+    list = list.filter((a) => a.dueDate === selectedDate);
+    listHeading.textContent = `${selectedDate} 마감 수행평가`;
+    clearDateFilterBtn.classList.remove("hidden");
+  } else {
+    listHeading.textContent = "전체 수행평가";
+    clearDateFilterBtn.classList.add("hidden");
+  }
+
+  if (list.length === 0) {
+    assignmentList.innerHTML = `<div class="empty-state">${
+      selectedDate ? "이 날짜에 등록된 수행평가가 없어요." : "등록된 수행평가가 없어요. 오른쪽 양식으로 추가해보세요."
+    }</div>`;
     return;
   }
-  assignmentList.innerHTML = assignments.map((a) => assignmentCardHtml(a, true)).join("");
+  const sorted = list.sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
+  assignmentList.innerHTML = sorted.map(assignmentCardHtml).join("");
 }
 
-// event delegation for dashboard + assignment lists
-[dashboardList, assignmentList].forEach((listEl) => {
-  listEl.addEventListener("click", (e) => {
-    const btn = e.target.closest("button[data-action]");
-    if (!btn) return;
-    const card = e.target.closest(".item-card");
-    const id = card.dataset.id;
-    const item = assignments.find((a) => a.id === id);
-    if (!item) return;
+assignmentList.addEventListener("click", (e) => {
+  const actionEl = e.target.closest("[data-action]");
+  if (!actionEl) return;
+  const card = e.target.closest(".item-card");
+  const id = card.dataset.id;
+  const item = assignments.find((a) => a.id === id);
+  if (!item) return;
 
-    if (btn.dataset.action === "guidance") openGuidance(item);
-    if (btn.dataset.action === "toggle-done") toggleDone(item);
-    if (btn.dataset.action === "edit") startEditAssignment(item);
-    if (btn.dataset.action === "delete") deleteAssignment(item);
-  });
+  const action = actionEl.dataset.action;
+  if (action === "guidance") {
+    if (item.criteria) openGuidanceModal(item);
+  }
+  if (action === "toggle-done") toggleDone(item);
+  if (action === "edit") startEditAssignment(item);
+  if (action === "delete") deleteAssignment(item);
 });
 
-function openGuidance(item) {
-  const blocks = analyzeCriteria(item.criteria);
-  guidanceContent.innerHTML =
-    `<p class="muted">"${escapeHtml(item.criteria)}"</p><br/>` +
-    blocks
-      .map(
-        (b) => `
-      <div class="guidance-block">
-        <h4>${escapeHtml(b.label)}</h4>
-        <ul>${b.tips.map((t) => `<li>${escapeHtml(t)}</li>`).join("")}</ul>
-      </div>
-    `
-      )
-      .join("");
+function guidanceBlocksHtml(item) {
+  const blocks = analyzeCriteria(item.criteria, item.title);
+  const header = `
+    <div class="guidance-head">
+      <div class="guidance-head-title">${escapeHtml(item.subject)} · ${escapeHtml(item.title)}</div>
+      ${item.criteria ? `<div class="guidance-head-criteria">평가기준: ${escapeHtml(item.criteria)}</div>` : ""}
+    </div>`;
+
+  const body = blocks
+    .map((b) => {
+      const examplesHtml =
+        b.examples && b.examples.length
+          ? `<div class="guidance-examples">
+               <div class="guidance-examples-label">이렇게 써보세요</div>
+               <ul>${b.examples.map((ex) => `<li>${escapeHtml(ex)}</li>`).join("")}</ul>
+             </div>`
+          : "";
+      return `
+        <div class="guidance-block ${b.isFramework ? "guidance-block-framework" : ""}">
+          <h4>${escapeHtml(b.label)}</h4>
+          <ul>${b.tips.map((t) => `<li>${escapeHtml(t)}</li>`).join("")}</ul>
+          ${examplesHtml}
+        </div>`;
+    })
+    .join("");
+
+  return header + body;
+}
+
+function openGuidanceModal(item) {
+  guidanceContent.innerHTML = guidanceBlocksHtml(item);
   guidanceModal.classList.remove("hidden");
 }
 
@@ -295,10 +279,9 @@ guidanceModal.addEventListener("click", (e) => {
   if (e.target === guidanceModal) guidanceModal.classList.add("hidden");
 });
 
-async function toggleDone(item) {
-  await updateDoc(doc(db, "users", currentUser.uid, "assignments", item.id), {
-    done: !item.done,
-  });
+function toggleDone(item) {
+  item.done = !item.done;
+  persistAssignments();
 }
 
 function startEditAssignment(item) {
@@ -309,7 +292,6 @@ function startEditAssignment(item) {
   document.getElementById("a-criteria").value = item.criteria || "";
   document.getElementById("a-memo").value = item.memo || "";
   assignmentCancelEdit.classList.remove("hidden");
-  document.querySelector('[data-tab="schedule"]').click();
   assignmentForm.scrollIntoView({ behavior: "smooth" });
 }
 
@@ -319,12 +301,18 @@ assignmentCancelEdit.addEventListener("click", () => {
   assignmentCancelEdit.classList.add("hidden");
 });
 
-async function deleteAssignment(item) {
+function deleteAssignment(item) {
   if (!confirm(`"${item.title}"을(를) 삭제할까요?`)) return;
-  await deleteDoc(doc(db, "users", currentUser.uid, "assignments", item.id));
+  assignments = assignments.filter((a) => a.id !== item.id);
+  persistAssignments();
 }
 
-assignmentForm.addEventListener("submit", async (e) => {
+function persistAssignments() {
+  setAssignments(assignments);
+  renderAll();
+}
+
+assignmentForm.addEventListener("submit", (e) => {
   e.preventDefault();
   const data = {
     subject: document.getElementById("a-subject").value.trim(),
@@ -335,139 +323,157 @@ assignmentForm.addEventListener("submit", async (e) => {
   };
 
   if (editingAssignmentId) {
-    await updateDoc(doc(db, "users", currentUser.uid, "assignments", editingAssignmentId), data);
+    const target = assignments.find((a) => a.id === editingAssignmentId);
+    Object.assign(target, data);
     editingAssignmentId = null;
     assignmentCancelEdit.classList.add("hidden");
   } else {
-    await addDoc(collection(db, "users", currentUser.uid, "assignments"), {
+    assignments.push({
+      id: makeId(),
       ...data,
       done: false,
-      createdAt: serverTimestamp(),
+      createdAt: Date.now(),
     });
   }
+
+  // 방금 등록한 수행평가가 보이도록 캘린더를 해당 월로 이동
+  if (data.dueDate) {
+    const due = new Date(data.dueDate);
+    calYear = due.getFullYear();
+    calMonth = due.getMonth();
+    selectedDate = data.dueDate;
+  }
+
   assignmentForm.reset();
+  persistAssignments();
 });
 
-// ---------- Materials ----------
-function renderMaterialAssignmentOptions() {
-  const current = materialAssignmentSelect.value;
-  materialAssignmentSelect.innerHTML =
-    `<option value="">(연결 안 함)</option>` +
-    assignments
-      .map((a) => `<option value="${a.id}">${escapeHtml(a.subject)} - ${escapeHtml(a.title)}</option>`)
-      .join("");
-  materialAssignmentSelect.value = current || "";
+// ---------- 세특 기록 ----------
+const GRADE_LABEL = { 1: "1학년", 2: "2학년", 3: "3학년" };
+const SEMESTER_LABEL = { 1: "1학기", 2: "2학기" };
+
+function persistRecords() {
+  setRecords(records);
+  renderRecords();
 }
 
-function renderMaterials() {
-  if (materials.length === 0) {
-    materialList.innerHTML = `<div class="empty-state">저장된 자료가 없어요.</div>`;
+function recordCardHtml(r) {
+  return `
+    <div class="item-card" data-id="${r.id}">
+      <div class="item-main">
+        <div class="item-title-row">
+          <span class="item-title">${escapeHtml(r.fileName || "메모")}</span>
+        </div>
+        ${r.content ? `<div class="item-meta">${escapeHtml(r.content)}</div>` : ""}
+        ${
+          r.fileName
+            ? `<div class="item-meta"><a href="${r.fileData}" download="${escapeHtml(r.fileName)}">📎 ${escapeHtml(r.fileName)}</a></div>`
+            : ""
+        }
+      </div>
+      <div class="item-actions">
+        <button class="btn btn-danger btn-sm" data-action="delete">삭제</button>
+      </div>
+    </div>
+  `;
+}
+
+function renderRecords() {
+  const gradeFilter = filterGrade.value;
+  const semesterFilter = filterSemester.value;
+
+  const filtered = records.filter(
+    (r) =>
+      (gradeFilter === "all" || String(r.grade) === gradeFilter) &&
+      (semesterFilter === "all" || String(r.semester) === semesterFilter)
+  );
+
+  if (filtered.length === 0) {
+    recordGroups.innerHTML = `<div class="empty-state">저장된 세특 자료가 없어요.</div>`;
     return;
   }
-  materialList.innerHTML = materials
-    .map((m) => {
-      const linked = assignments.find((a) => a.id === m.assignmentId);
+
+  const groups = {};
+  filtered.forEach((r) => {
+    const key = `${r.grade}-${r.semester}`;
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(r);
+  });
+
+  const sortedKeys = Object.keys(groups).sort((a, b) => {
+    const [ag, as] = a.split("-").map(Number);
+    const [bg, bs] = b.split("-").map(Number);
+    return ag - bg || as - bs;
+  });
+
+  recordGroups.innerHTML = sortedKeys
+    .map((key) => {
+      const [grade, semester] = key.split("-");
+      const items = [...groups[key]].sort((a, b) => b.createdAt - a.createdAt);
       return `
-      <div class="item-card" data-id="${m.id}">
-        <div class="item-main">
-          <div class="item-title-row"><span class="item-title">${escapeHtml(m.title)}</span></div>
-          ${linked ? `<div class="item-subject">${escapeHtml(linked.subject)} - ${escapeHtml(linked.title)}</div>` : ""}
-          ${m.note ? `<div class="item-meta">${escapeHtml(m.note)}</div>` : ""}
-          ${m.fileURL ? `<div class="item-meta"><a href="${m.fileURL}" target="_blank" rel="noopener">📎 첨부파일 열기</a></div>` : ""}
-        </div>
-        <div class="item-actions">
-          <button class="btn btn-danger btn-sm" data-action="delete">삭제</button>
-        </div>
-      </div>
-    `;
+        <h3 class="sub-title">${GRADE_LABEL[grade]} ${SEMESTER_LABEL[semester]}</h3>
+        <div class="list">${items.map(recordCardHtml).join("")}</div>
+      `;
     })
     .join("");
 }
 
-materialList.addEventListener("click", async (e) => {
+recordGroups.addEventListener("click", (e) => {
   const btn = e.target.closest("button[data-action='delete']");
   if (!btn) return;
   const card = e.target.closest(".item-card");
   const id = card.dataset.id;
   if (!confirm("이 자료를 삭제할까요?")) return;
-  await deleteDoc(doc(db, "users", currentUser.uid, "materials", id));
+  records = records.filter((r) => r.id !== id);
+  persistRecords();
 });
 
-materialForm.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const title = document.getElementById("m-title").value.trim();
-  const assignmentId = materialAssignmentSelect.value;
-  const note = document.getElementById("m-note").value.trim();
-  const fileInput = document.getElementById("m-file");
-  const file = fileInput.files[0];
-
-  let fileURL = null;
-  try {
-    if (file) {
-      materialUploadStatus.textContent = "업로드 중...";
-      const fileRef = ref(storage, `users/${currentUser.uid}/materials/${Date.now()}_${file.name}`);
-      await uploadBytes(fileRef, file);
-      fileURL = await getDownloadURL(fileRef);
-    }
-
-    await addDoc(collection(db, "users", currentUser.uid, "materials"), {
-      title,
-      assignmentId: assignmentId || null,
-      note,
-      fileURL,
-      createdAt: serverTimestamp(),
-    });
-
-    materialUploadStatus.textContent = "";
-    materialForm.reset();
-  } catch (err) {
-    materialUploadStatus.textContent = "저장 실패: " + err.message;
-  }
-});
-
-// ---------- Records (세특 메모) ----------
-function renderRecords() {
-  if (records.length === 0) {
-    recordList.innerHTML = `<div class="empty-state">저장된 세특 메모가 없어요.</div>`;
-    return;
-  }
-  recordList.innerHTML = records
-    .map(
-      (r) => `
-      <div class="item-card" data-id="${r.id}">
-        <div class="item-main">
-          <div class="item-title-row"><span class="item-title">${escapeHtml(r.subject)}</span></div>
-          <div class="item-meta">${escapeHtml(r.content)}</div>
-        </div>
-        <div class="item-actions">
-          <button class="btn btn-danger btn-sm" data-action="delete">삭제</button>
-        </div>
-      </div>
-    `
-    )
-    .join("");
-}
-
-recordList.addEventListener("click", async (e) => {
-  const btn = e.target.closest("button[data-action='delete']");
-  if (!btn) return;
-  const card = e.target.closest(".item-card");
-  const id = card.dataset.id;
-  if (!confirm("이 메모를 삭제할까요?")) return;
-  await deleteDoc(doc(db, "users", currentUser.uid, "records", id));
-});
+filterGrade.addEventListener("change", renderRecords);
+filterSemester.addEventListener("change", renderRecords);
 
 recordForm.addEventListener("submit", async (e) => {
   e.preventDefault();
-  const subject = document.getElementById("r-subject").value.trim();
+  const grade = document.getElementById("r-grade").value;
+  const semester = document.getElementById("r-semester").value;
   const content = document.getElementById("r-content").value.trim();
+  const fileInput = document.getElementById("r-file");
+  const file = fileInput.files[0];
 
-  await addDoc(collection(db, "users", currentUser.uid, "records"), {
-    subject,
+  let fileData = null;
+  let fileName = null;
+
+  if (file) {
+    if (file.size > MAX_FILE_SIZE) {
+      recordStatus.textContent = "파일이 너무 커요 (3MB 이하만 첨부 가능).";
+      return;
+    }
+    try {
+      fileData = await readFileAsDataURL(file);
+      fileName = file.name;
+    } catch {
+      recordStatus.textContent = "파일을 읽는 중 오류가 발생했어요.";
+      return;
+    }
+  }
+
+  if (!file && !content) {
+    recordStatus.textContent = "파일을 첨부하거나 메모를 입력해주세요.";
+    return;
+  }
+
+  records.push({
+    id: makeId(),
+    grade,
+    semester,
     content,
-    createdAt: serverTimestamp(),
+    fileData,
+    fileName,
+    createdAt: Date.now(),
   });
+
+  recordStatus.textContent = "";
   recordForm.reset();
+  persistRecords();
 });
 
 // ---------- Utils ----------
@@ -480,3 +486,7 @@ function escapeHtml(str) {
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
 }
+
+// ---------- Init ----------
+renderAll();
+renderRecords();
