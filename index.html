@@ -1,7 +1,182 @@
-<html>
-<head><title>안녕하세요
-</title>
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>수행평가 매니저</title>
+<meta name="description" content="수행평가 자료 보관, 일정 알림, 평가기준 준비 가이드" />
+<link rel="stylesheet" href="css/style.css" />
 </head>
-<body>vibcoding
+<body>
+
+<!-- 로그인 전 화면 -->
+<div id="login-screen" class="login-screen">
+  <div class="login-box">
+    <p class="eyebrow">👋 안녕하세요</p>
+    <h1>수행평가 매니저</h1>
+    <p class="lead">
+      수행평가 결과물과 세특 자료를 한곳에 보관하고,
+      일정을 등록하면 마감이 다가올 때 알려드려요.
+      평가기준을 입력하면 준비 방향도 제안해드립니다.
+    </p>
+    <button id="login-btn" class="btn btn-primary">Google 계정으로 로그인</button>
+    <p id="login-error" class="error-text"></p>
+
+    <details class="setup-guide">
+      <summary>⚙️ 처음 사용하시나요? (Firebase 설정 안내)</summary>
+      <div class="setup-guide-body">
+        <p>이 사이트는 서버 없이 동작하는 정적 사이트라, 데이터 저장을 위해 <strong>Firebase</strong>(무료)를 직접 연결해야 합니다.</p>
+        <ol>
+          <li><a href="https://console.firebase.google.com/" target="_blank" rel="noopener">Firebase 콘솔</a>에서 새 프로젝트를 만드세요.</li>
+          <li><strong>Authentication → Sign-in method</strong>에서 <em>Google</em> 로그인을 사용 설정하세요.</li>
+          <li><strong>Firestore Database</strong>를 생성하세요 (프로덕션 모드로 시작해도 됩니다).</li>
+          <li><strong>Storage</strong>를 생성하세요 (수행평가 결과물 파일 첨부용).</li>
+          <li>프로젝트 설정 → 일반 → "내 앱"에서 웹 앱을 추가하고, 나오는 <code>firebaseConfig</code> 값을 <code>js/firebase-config.js</code> 파일에 붙여넣으세요.</li>
+          <li>Firestore와 Storage의 보안 규칙을 <code>firestore.rules</code>, <code>storage.rules</code> 파일 내용대로 설정하세요 (본인 데이터만 본인이 접근 가능하도록).</li>
+        </ol>
+        <p class="muted">설정을 마치기 전까지는 로그인 버튼이 동작하지 않아요.</p>
+      </div>
+    </details>
+  </div>
+</div>
+
+<!-- 로그인 후 앱 화면 -->
+<div id="app" class="app hidden">
+  <header>
+    <div class="nav-inner">
+      <div class="logo">수행평가 매니저</div>
+      <div class="user-box">
+        <span id="user-email" class="user-email"></span>
+        <button id="logout-btn" class="btn btn-secondary btn-sm">로그아웃</button>
+      </div>
+    </div>
+  </header>
+
+  <div id="notice-banner" class="notice-banner hidden"></div>
+
+  <nav class="tabs">
+    <button class="tab-btn active" data-tab="dashboard">대시보드</button>
+    <button class="tab-btn" data-tab="schedule">수행평가 일정</button>
+    <button class="tab-btn" data-tab="materials">자료함</button>
+    <button class="tab-btn" data-tab="records">세특 메모</button>
+  </nav>
+
+  <!-- 대시보드 -->
+  <section id="tab-dashboard" class="tab-panel">
+    <h2 class="section-title">대시보드</h2>
+    <div class="stat-grid" id="stat-grid"></div>
+    <h3 class="sub-title">다가오는 수행평가</h3>
+    <div id="dashboard-list" class="list"></div>
+  </section>
+
+  <!-- 수행평가 일정 -->
+  <section id="tab-schedule" class="tab-panel hidden">
+    <h2 class="section-title">수행평가 일정</h2>
+    <p class="section-sub">과목, 마감일, 평가기준을 등록하면 준비 방향을 제안해드려요.</p>
+
+    <form id="assignment-form" class="card-form">
+      <div class="form-row">
+        <div class="form-group">
+          <label>과목</label>
+          <input type="text" id="a-subject" placeholder="예: 통합과학" required />
+        </div>
+        <div class="form-group">
+          <label>수행평가 이름</label>
+          <input type="text" id="a-title" placeholder="예: 탐구 보고서 발표" required />
+        </div>
+        <div class="form-group">
+          <label>마감일</label>
+          <input type="date" id="a-due" required />
+        </div>
+      </div>
+      <div class="form-group">
+        <label>평가기준 (선생님이 제시한 기준을 붙여넣으세요)</label>
+        <textarea id="a-criteria" rows="3" placeholder="예: 창의성, 논리적 전개, 자료 활용, 협업 태도 등"></textarea>
+      </div>
+      <div class="form-group">
+        <label>메모</label>
+        <textarea id="a-memo" rows="2" placeholder="추가로 기억할 내용"></textarea>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary">등록하기</button>
+        <button type="button" id="assignment-cancel-edit" class="btn btn-secondary hidden">수정 취소</button>
+      </div>
+    </form>
+
+    <div id="assignment-list" class="list"></div>
+  </section>
+
+  <!-- 자료함 -->
+  <section id="tab-materials" class="tab-panel hidden">
+    <h2 class="section-title">자료함</h2>
+    <p class="section-sub">수행평가 결과물, 참고 자료 파일을 과목/과제별로 보관하세요.</p>
+
+    <form id="material-form" class="card-form">
+      <div class="form-row">
+        <div class="form-group">
+          <label>연결할 수행평가 (선택)</label>
+          <select id="m-assignment"></select>
+        </div>
+        <div class="form-group">
+          <label>제목</label>
+          <input type="text" id="m-title" placeholder="예: 최종 보고서.pdf" required />
+        </div>
+      </div>
+      <div class="form-group">
+        <label>파일 (선택)</label>
+        <input type="file" id="m-file" />
+      </div>
+      <div class="form-group">
+        <label>메모</label>
+        <textarea id="m-note" rows="2" placeholder="이 자료에 대한 설명"></textarea>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary">저장하기</button>
+      </div>
+      <p id="material-upload-status" class="muted"></p>
+    </form>
+
+    <div id="material-list" class="list"></div>
+  </section>
+
+  <!-- 세특 메모 -->
+  <section id="tab-records" class="tab-panel hidden">
+    <h2 class="section-title">세특 메모</h2>
+    <p class="section-sub">과목별 세부능력 및 특기사항 초안을 미리 기록해두세요.</p>
+
+    <form id="record-form" class="card-form">
+      <div class="form-row">
+        <div class="form-group">
+          <label>과목</label>
+          <input type="text" id="r-subject" placeholder="예: 생명과학Ⅰ" required />
+        </div>
+      </div>
+      <div class="form-group">
+        <label>내용</label>
+        <textarea id="r-content" rows="4" placeholder="수업 중 활동, 발표, 탐구 내용 등을 기록하세요" required></textarea>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary">저장하기</button>
+      </div>
+    </form>
+
+    <div id="record-list" class="list"></div>
+  </section>
+
+  <footer>
+    <p>&copy; 2026 수행평가 매니저</p>
+  </footer>
+</div>
+
+<!-- 준비 방향 가이드 모달 -->
+<div id="guidance-modal" class="modal hidden">
+  <div class="modal-box">
+    <button id="guidance-close" class="modal-close">✕</button>
+    <h3>준비 방향 제안</h3>
+    <div id="guidance-content"></div>
+  </div>
+</div>
+
+<script type="module" src="js/app.js"></script>
 </body>
 </html>
